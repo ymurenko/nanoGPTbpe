@@ -49,7 +49,7 @@ dataset = 'data/prepare-out'
 multi_file_dataset = True # set true if dataset is split into multiple files
 gradient_accumulation_steps = 5 # used to simulate larger batch sizes
 batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 400 # AKA context length
+block_size = 380 # AKA context length
 # model
 n_layer = 12 # 12 for gpt2, 24 for gpt2-xl
 n_head = 16 # 12 for gpt2, 16 for gpt2-xl
