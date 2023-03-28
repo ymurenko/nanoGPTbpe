@@ -33,25 +33,25 @@ from model import GPTConfig, GPT
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
-out_dir = 'bpe-simplewiki-out'
-eval_interval = 600 # iters per eval
+out_dir = 'train-simplewiki-out'
+eval_interval = 1000 # iters per eval
 log_interval = 10
 eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
-wandb_log = False # disabled by default
-wandb_project = 'owt'
-wandb_run_name = 'gpt2' # 'run' + str(time.time())
+wandb_log = True # disabled by default
+wandb_project = 'nanogptebpe'
+wandb_run_name = 'run' + str(time.time()) # 'run' + str(time.time())
 # data
 dataset = 'data/prepare-out'
 multi_file_dataset = True # set true if dataset is split into multiple files
-gradient_accumulation_steps = 5 # used to simulate larger batch sizes
-batch_size = 8 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 380 # AKA context length
+gradient_accumulation_steps = 4 # used to simulate larger batch sizes
+batch_size = 4 # if gradient_accumulation_steps > 1, this is the micro-batch size
+block_size = 512 # AKA context length
 # model
-n_layer = 12 # 12 for gpt2, 24 for gpt2-xl
+n_layer = 16 # 12 for gpt2, 24 for gpt2-xl
 n_head = 16 # 12 for gpt2, 16 for gpt2-xl
 n_embd = 1024 # 768 for gpt2, 1024 for gpt2-xl
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
@@ -190,7 +190,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
-    print("Initializing a new model from scratch")
+    print(f"Initializing a new model from scratch. Bactch size: {batch_size}")
     # determine the vocab size we'll use for from-scratch training
     if meta_vocab_size is None:
         print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
@@ -198,7 +198,7 @@ if init_from == 'scratch':
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
 elif init_from == 'resume':
-    print(f"Resuming training from {out_dir}")
+    print(f"Resuming training from {out_dir}. Bactch size: {batch_size}")
     # resume training from a checkpoint.
     ckpt_path = os.path.join(out_dir, 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
@@ -292,6 +292,7 @@ X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
+running_flops = -1.0
 running_mfu = -1.0
 while True:
 
@@ -304,14 +305,14 @@ while True:
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-        if wandb_log:
-            wandb.log({
-                "iter": iter_num,
-                "train/loss": losses['train'],
-                "val/loss": losses['val'],
-                "lr": lr,
-                "mfu": running_mfu*100, # convert to percentage
-            })
+        # if wandb_log:
+        #     wandb.log({
+        #         "iter": iter_num,
+        #         "train/loss": losses['train'],
+        #         "val/loss": losses['val'],
+        #         "lr": lr,
+        #         "mfu": running_mfu*100, # convert to percentage
+        #     })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -360,9 +361,20 @@ while True:
     if iter_num % log_interval == 0 and master_process:
         lossf = loss.item() # loss as float. note: this is a CPU-GPU sync point
         if local_iter_num >= 5: # let the training loop settle a bit
-            mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
+            flops_achieved = raw_model.estimate_flops(batch_size * gradient_accumulation_steps, dt)
+            flops_promised = 16.2e12 # RTX3060ti GPU bfloat16 peak flops is 312 TFLOPS
+            mfu = flops_achieved / flops_promised
+            running_flops = flops_achieved if running_flops == -1.0 else 0.9*running_flops + 0.1*flops_achieved
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        print(f"{iter_num}: {dt*1000:.2f}ms, {running_flops/1e12:.2f}Tflops | loss: {lossf:.4f}, lr: {lr:.4f}, mfu: {running_mfu*100:.2f}%")
+        if wandb_log:
+            wandb.log({
+                "iter": iter_num,
+                "loss": lossf,
+                "lr": lr,
+                "mfu": running_mfu*100,
+                "tflops": running_flops/1e12
+            })
     iter_num += 1
     local_iter_num += 1
 

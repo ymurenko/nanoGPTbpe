@@ -3,3 +3,4 @@ data/*
 !parse-wikidump.py
 !prepare-bpe.py
 !test-encoding.py
+!train-tokenizer.py
