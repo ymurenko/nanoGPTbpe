@@ -21,6 +21,7 @@ import random
 import time
 import math
 import pickle
+import gc
 from contextlib import nullcontext
 
 import numpy as np
@@ -241,6 +242,7 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
+checkpoint = None # free up memory
 
 # compile the model
 if compile:
@@ -305,14 +307,12 @@ while True:
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-        # if wandb_log:
-        #     wandb.log({
-        #         "iter": iter_num,
-        #         "train/loss": losses['train'],
-        #         "val/loss": losses['val'],
-        #         "lr": lr,
-        #         "mfu": running_mfu*100, # convert to percentage
-        #     })
+        if wandb_log:
+            wandb.log({
+                "val/loss": losses['val'],
+                "lr": lr,
+                "mfu": running_mfu*100, # convert to percentage
+            })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -366,12 +366,12 @@ while True:
             mfu = flops_achieved / flops_promised
             running_flops = flops_achieved if running_flops == -1.0 else 0.9*running_flops + 0.1*flops_achieved
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"{iter_num}: {dt*1000:.2f}ms, {running_flops/1e12:.2f}Tflops | loss: {lossf:.4f}, lr: {lr:.4f}, mfu: {running_mfu*100:.2f}%")
+        print(f"{iter_num}: {dt*1000:.2f}ms, {running_flops/1e12:.2f}Tflops | loss: {lossf:.4f}, mfu: {running_mfu*100:.2f}%")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
+                "iter_time_ms": dt*1000,
                 "loss": lossf,
-                "lr": lr,
                 "mfu": running_mfu*100,
                 "tflops": running_flops/1e12
             })
